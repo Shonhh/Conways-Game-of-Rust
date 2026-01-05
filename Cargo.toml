@@ -3,7 +3,12 @@ name = "conway_game_of_rust"
 version = "0.1.0"
 authors = ["Sean Hokanson"]
 license = "MIT"
-edition = "2024"
+edition = "2021"
+description = "A TUI implementation of Conway's Game of Life in Rust."
+repository = "https://github.com/Shonhh/Conways-Game-of-Rust"
+readme = "README.md"
+keywords = ["game-of-life", "tui", "ratatui", "game"]
+categories = ["command-line-utilities", "games"]
 
 [dependencies]
 color-eyre = "0.6.5"
