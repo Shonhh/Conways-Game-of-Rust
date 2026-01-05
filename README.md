@@ -60,7 +60,7 @@ nix develop
 
 ---
 
-## 🎮 Usage
+## Usage
 
 Run the application from your terminal:
 
