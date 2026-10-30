@@ -2,7 +2,7 @@ use core::panic;
 use std::fmt;
 
 /// An enum that represents the state of an individual cell.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum CellState {
     Alive,
     Dead,
@@ -24,9 +24,10 @@ impl CellState {
 /// Uses a single flattened `Vec<CellState>` instead of a `Vec<Vec<CellState>>`.
 /// This improves CPU cache locality and performance, as the entire grid is contiguous
 /// in memory. We calculate 2D indices manually using `row * width + col`.
+/// Boundaries are fixed: cells outside the grid are always dead.
 pub struct Grid {
-    pub width: usize,
-    pub height: usize,
+    width: usize,
+    height: usize,
     cells: Vec<CellState>,
 }
 
@@ -41,7 +42,9 @@ impl Grid {
     /// Initialize a new Grid of size `width` * `height`, with all values
     /// being `CellState::Dead`.
     pub fn new(width: usize, height: usize) -> Self {
-        let cells = vec![CellState::Dead; width * height];
+        assert!(width > 0 && height > 0, "grid dimensions must be positive");
+        let cell_count = width.checked_mul(height).expect("grid dimensions overflow");
+        let cells = vec![CellState::Dead; cell_count];
         Grid {
             width,
             height,
@@ -49,18 +52,52 @@ impl Grid {
         }
     }
 
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    pub fn live_count(&self) -> usize {
+        self.cells
+            .iter()
+            .filter(|&&cell| cell == CellState::Alive)
+            .count()
+    }
+
+    /// Stable FNV-1a checksum over dimensions (u64 little endian), then
+    /// row-major cells (dead = 0, alive = 1). This is not cryptographic.
+    pub fn checksum(&self) -> u64 {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in (self.width as u64)
+            .to_le_bytes()
+            .into_iter()
+            .chain((self.height as u64).to_le_bytes())
+            .chain(
+                self.cells
+                    .iter()
+                    .map(|cell| u8::from(*cell == CellState::Alive)),
+            )
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
     /// Returns Some(CellState) if coordinates in bounds, None otherwise.
     pub fn get(&self, row: usize, col: usize) -> Option<&CellState> {
-        let index = self.get_index_from_coords(row, col);
-        self.cells.get(index)
+        self.get_index_from_coords(row, col)
+            .and_then(|index| self.cells.get(index))
     }
 
     /// Sets the given coordinate to `new_state`, doing nothing if
     /// coordinates are out of bounds.
     pub fn set(&mut self, row: usize, col: usize, new_state: CellState) {
-        let index = self.get_index_from_coords(row, col);
-        if let Some(cur_state) = self.cells.get_mut(index) {
-            *cur_state = new_state;
+        if let Some(index) = self.get_index_from_coords(row, col) {
+            self.cells[index] = new_state;
         }
     }
 
@@ -73,8 +110,8 @@ impl Grid {
 
     /// Flips a rectangular region of cells. Used by Visual Mode.
     pub fn multi_toggle_cells(&mut self, min_r: usize, max_r: usize, min_c: usize, max_c: usize) {
-        for r in min_r..=max_r {
-            for c in min_c..=max_c {
+        for r in min_r..=max_r.min(self.height - 1) {
+            for c in min_c..=max_c.min(self.width - 1) {
                 self.toggle_cell(r, c)
             }
         }
@@ -85,25 +122,14 @@ impl Grid {
         self.cells = vec![CellState::Dead; self.width * self.height];
     }
 
-    // fn set_alive(&mut self, coords: &[(usize, usize)]) {
-    //     for &(r, c) in coords {
-    //         self.set(r, c, CellState::Alive);
-    //     }
-    // }
-
-    // fn load_pattern(&mut self, pattern: &str, start_row: usize, start_col: usize) {
-    //     for (row_offset, line) in pattern.trim().lines().enumerate() {
-    //         for (col_offset, ch) in line.trim().chars().enumerate() {
-    //             if ch == '#' {
-    //                 self.set(start_row + row_offset, start_col + col_offset, CellState::Alive);
-    //             }
-    //         }
-    //     }
-    // }
-
-    /// Helper to get the associated 1D index from a 2D `x` and `y` coordinate.
-    fn get_index_from_coords(&self, row: usize, col: usize) -> usize {
-        row * self.width + col
+    /// Validate both coordinates before flattening, so an invalid column
+    /// cannot alias a valid cell in the following row.
+    fn get_index_from_coords(&self, row: usize, col: usize) -> Option<usize> {
+        if row < self.height && col < self.width {
+            Some(row * self.width + col)
+        } else {
+            None
+        }
     }
 
     /// Calculate the next state of the grid.
@@ -216,5 +242,181 @@ impl fmt::Display for Grid {
             .try_for_each(|line| writeln!(f, "{}", line))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid_with(width: usize, height: usize, live: &[(usize, usize)]) -> Grid {
+        let mut grid = Grid::new(width, height);
+        for &(row, col) in live {
+            grid.set(row, col, CellState::Alive);
+        }
+        grid
+    }
+
+    fn live_cells(grid: &Grid) -> Vec<(usize, usize)> {
+        (0..grid.height())
+            .flat_map(|row| {
+                (0..grid.width()).filter_map(move |col| {
+                    (grid.get(row, col) == Some(&CellState::Alive)).then_some((row, col))
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn block_is_stable() {
+        let cells = [(2, 2), (2, 3), (3, 2), (3, 3)];
+        let mut grid = grid_with(7, 6, &cells);
+        for _ in 0..10 {
+            grid.next_generation();
+            assert_eq!(live_cells(&grid), cells);
+        }
+    }
+
+    #[test]
+    fn blinker_has_period_two() {
+        let horizontal = [(2, 1), (2, 2), (2, 3)];
+        let mut grid = grid_with(5, 5, &horizontal);
+        grid.next_generation();
+        assert_eq!(live_cells(&grid), [(1, 2), (2, 2), (3, 2)]);
+        grid.next_generation();
+        assert_eq!(live_cells(&grid), horizontal);
+    }
+
+    #[test]
+    fn glider_translates_after_four_generations() {
+        let mut grid = grid_with(10, 9, &[(2, 3), (3, 4), (4, 2), (4, 3), (4, 4)]);
+        for _ in 0..4 {
+            grid.next_generation();
+        }
+        assert_eq!(live_cells(&grid), [(3, 4), (4, 5), (5, 3), (5, 4), (5, 5)]);
+    }
+
+    #[test]
+    fn invalid_coordinates_do_not_alias_other_rows_or_overflow() {
+        let mut grid = grid_with(4, 3, &[(1, 0)]);
+        let before = grid.checksum();
+        for (row, col) in [(0, 4), (1, 4), (3, 0), (usize::MAX, 0), (0, usize::MAX)] {
+            assert_eq!(grid.get(row, col), None);
+            grid.set(row, col, CellState::Alive);
+            grid.toggle_cell(row, col);
+        }
+        assert_eq!(grid.checksum(), before);
+        assert_eq!(grid.get(1, 0), Some(&CellState::Alive));
+    }
+
+    #[test]
+    fn corner_blocks_are_stable_with_dead_exterior() {
+        for (top, left) in [(0, 0), (0, 3), (2, 0), (2, 3)] {
+            let cells = [
+                (top, left),
+                (top, left + 1),
+                (top + 1, left),
+                (top + 1, left + 1),
+            ];
+            let mut grid = grid_with(5, 4, &cells);
+            grid.next_generation();
+            assert_eq!(live_cells(&grid), cells);
+        }
+    }
+
+    #[test]
+    fn opposite_edges_do_not_wrap() {
+        let mut grid = grid_with(5, 5, &[(0, 4), (4, 0), (4, 4)]);
+        grid.next_generation();
+        assert_eq!(grid.live_count(), 0);
+    }
+
+    #[test]
+    fn top_edge_blinker_loses_exterior_birth() {
+        let mut grid = grid_with(5, 5, &[(0, 1), (0, 2), (0, 3)]);
+        grid.next_generation();
+        assert_eq!(live_cells(&grid), [(0, 2), (1, 2)]);
+    }
+
+    #[test]
+    fn tiny_and_empty_grids_update() {
+        for (width, height) in [(1, 1), (1, 4), (4, 1)] {
+            let mut grid = grid_with(width, height, &[(0, 0)]);
+            grid.next_generation();
+            assert_eq!(grid.live_count(), 0);
+            grid.next_generation();
+            assert_eq!(grid.live_count(), 0);
+        }
+    }
+
+    #[test]
+    fn every_local_rule_combination_is_correct() {
+        let offsets = [
+            (1, 1),
+            (1, 2),
+            (1, 3),
+            (2, 1),
+            (2, 3),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+        ];
+        for mask in 0_u16..256 {
+            for center_alive in [false, true] {
+                let mut grid = Grid::new(5, 5);
+                for (bit, &(row, col)) in offsets.iter().enumerate() {
+                    if mask & (1 << bit) != 0 {
+                        grid.set(row, col, CellState::Alive);
+                    }
+                }
+                if center_alive {
+                    grid.set(2, 2, CellState::Alive);
+                }
+                grid.next_generation();
+                let count = mask.count_ones();
+                let expected = count == 3 || (center_alive && count == 2);
+                assert_eq!(
+                    grid.get(2, 2) == Some(&CellState::Alive),
+                    expected,
+                    "mask={mask}, center_alive={center_alive}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rectangle_toggle_clips_and_reset_preserves_dimensions() {
+        let mut grid = Grid::new(4, 3);
+        grid.multi_toggle_cells(1, usize::MAX, 2, usize::MAX);
+        assert_eq!(live_cells(&grid), [(1, 2), (1, 3), (2, 2), (2, 3)]);
+        grid.reset();
+        assert_eq!((grid.width(), grid.height()), (4, 3));
+        assert_eq!(grid.live_count(), 0);
+    }
+
+    #[test]
+    fn checksum_includes_shape_and_cell_positions() {
+        let first = grid_with(4, 3, &[(1, 0)]);
+        assert_ne!(first.checksum(), grid_with(4, 3, &[(0, 1)]).checksum());
+        assert_ne!(Grid::new(4, 3).checksum(), Grid::new(3, 4).checksum());
+        assert_eq!(first.checksum(), grid_with(4, 3, &[(1, 0)]).checksum());
+    }
+
+    #[test]
+    #[should_panic(expected = "grid dimensions must be positive")]
+    fn zero_width_is_rejected() {
+        Grid::new(0, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "grid dimensions must be positive")]
+    fn zero_height_is_rejected() {
+        Grid::new(3, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "grid dimensions overflow")]
+    fn overflowing_dimensions_are_rejected() {
+        Grid::new(usize::MAX, 2);
     }
 }

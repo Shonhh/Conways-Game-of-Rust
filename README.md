@@ -101,7 +101,7 @@ The current version (v0.1.0) focuses on a stable, idiomatic implementation of th
 
 
 * [ ] **Performance Optimizations**:
-* Currently, the engine uses a dense 2D vector, which limits performance on extremely large grids.
+* Currently, the engine uses a dense, flattened vector, which limits performance on extremely large grids.
 * **Goal**: Refactor to a **sparse matrix** or **HashLife** algorithm to support millions of active cells with minimal memory overhead.
 
 
@@ -128,3 +128,75 @@ The current version (v0.1.0) focuses on a stable, idiomatic implementation of th
 ## License
 
 This project is licensed under the **MIT License**. See the `LICENSE` file for details.
+
+## Headless experiments
+
+Run the same simulation engine without terminal rendering or a frame delay:
+
+```bash
+# A centered glider on a 64 by 48 grid; CSV goes to stdout.
+cargo run --release -- --headless --width 64 --height 48 \
+  --pattern glider --generations 100
+
+# Reproducible random initialization; output must be a new file.
+cargo run --release -- --headless --width 512 --height 512 \
+  --seed 42 --density 0.3 --generations 1000 --output experiment.csv
+
+cargo run -- --help
+```
+
+Running with no arguments still opens the existing terminal interface. With Nix,
+pass the same arguments after `nix run . --`.
+
+Available patterns are `empty`, `block`, `blinker`, and `glider`. Patterns are
+centered using integer division; a pattern that does not fit is rejected rather
+than clipped. `--seed` selects random initialization instead of a built-in
+pattern, and cannot be combined with `--pattern`. The default density is 0.3;
+`--density` requires `--seed`. Seeds are unsigned 64-bit integers, including zero.
+Random initialization uses SplitMix64 in row-major order, converting its upper
+53 bits to a probability in [0, 1). The same dimensions, seed, density, and
+number of generations reproduce the same states, independent of timing.
+
+The grid uses **fixed, dead boundaries**: every cell outside it is dead. There
+is no wrapping or automatic expansion. A glider eventually reaches the edge,
+so choose enough space for the number of generations you want to observe.
+
+CSV contains these columns:
+
+| Column | Meaning |
+| --- | --- |
+| `width`, `height` | Grid dimensions in cells |
+| `boundary` | `fixed-dead` |
+| `initialization` | Pattern name or `random` |
+| `seed`, `density` | Random configuration; blank for built-in patterns |
+| `generation` | Zero for the initial state, then one row per update |
+| `elapsed_update_ns` | Cumulative time spent inside `next_generation()`, in nanoseconds |
+| `live_cells` | Population after this generation |
+| `checksum` | 16-digit hexadecimal FNV-1a state checksum |
+
+The checksum covers width and height as little-endian u64 values, followed by
+row-major cell bytes (dead = 0, alive = 1). It is a reproducibility check, not a
+cryptographic hash or a substitute for comparing complete states in tests.
+
+Timing excludes initialization, population counting, checksums, and CSV output.
+Those operations still scan the grid and affect total runtime and cache state.
+These timings are an experiment log, not a controlled benchmark; use a dedicated
+benchmark before making performance claims. Output defaults to stdout; `--output -`
+also selects stdout. A named output file is created only if it does not already
+exist, and is explicitly flushed so write errors are reported.
+
+## Correctness checks
+
+```bash
+cargo test
+```
+
+Tests cover all 512 combinations of center-cell state and eight neighbors,
+block stability, blinker oscillation, glider translation, dead boundaries,
+invalid coordinates, tiny grids, rectangle editing, dimension validation,
+checksums, CLI argument validation, random initialization, and CSV output.
+
+`Grid` stores dimensions privately and exposes `width()` and `height()`. Both
+coordinates are validated before calculating a flat index. Invalid `get()`
+returns `None`; invalid `set()` and `toggle_cell()` do nothing. Constructors
+reject zero dimensions and dimension multiplication overflow.

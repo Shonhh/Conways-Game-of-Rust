@@ -15,12 +15,19 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use conway_game_of_rust::experiment;
 use conway_game_of_rust::grid::{CellState, Grid};
 
 // Sets the speed of the simulation, will be mutable in the future.
 const TIME_BETWEEN_GENERATIONS: u64 = 150;
 
 fn main() -> io::Result<()> {
+    // Headless runs never initialize the terminal or wait between generations.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        return experiment::run_cli(&args);
+    }
+
     // Initialize the terminal interface (enters raw mode, clears screen)
     let mut terminal = ratatui::init();
     // Run the application loop
@@ -79,15 +86,15 @@ impl App {
         let mut last_tick = Instant::now();
 
         while !self.exit {
-            // 1. Render the current state
+            // Render the current state
             terminal.draw(|frame| self.draw(frame))?;
 
-            // 2. Calculate remaining time in this frame to maintain consistent speed
+            // Calculate remaining time in this frame to maintain consistent speed
             let timeout = tick_rate
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
 
-            // 3. Poll for user input (non-blocking wait based on timeout)
+            // Poll for user input (non-blocking wait based on timeout)
             if event::poll(timeout)? {
                 if let Event::Key(key) = event::read()? {
                     // Only handle press events, ignore release/repeat for cleaner input
@@ -97,7 +104,7 @@ impl App {
                 }
             }
 
-            // 4. Update the simulation if the timer has elapsed and we are RUNNING
+            // Update the simulation if the timer has elapsed and we are RUNNING
             if last_tick.elapsed() >= tick_rate {
                 if self.mode == Mode::RUNNING {
                     self.grid.next_generation();
@@ -151,7 +158,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if self.mode != Mode::RUNNING => {
-                if row < self.grid.height - 1 {
+                if row < self.grid.height() - 1 {
                     self.cursor_pos.0 += 1
                 }
             }
@@ -161,7 +168,7 @@ impl App {
                 }
             }
             KeyCode::Right | KeyCode::Char('l') if self.mode != Mode::RUNNING => {
-                if col < self.grid.width - 1 {
+                if col < self.grid.width() - 1 {
                     self.cursor_pos.1 += 1;
                 }
             }
@@ -223,7 +230,7 @@ fn get_row_and_col_span(
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Construct the title bar
-        let title = Line::from(format!(" Conway's Game of Rust {}", self.mode).bold());
+        let title = Line::from(format!(" Conway's Game of Rust {} ", self.mode).bold());
 
         // Dynamic help text at the bottom based on current mode
         let instructions = {
@@ -274,10 +281,10 @@ impl Widget for &App {
         let mut grid_lines = Vec::new();
 
         // --- Render the Grid ---
-        for r in 0..self.grid.height {
+        for r in 0..self.grid.height() {
             let mut row_spans = Vec::new();
 
-            for c in 0..self.grid.width {
+            for c in 0..self.grid.width() {
                 // Determine the character symbol (Block for Alive, Dotted for Dead)
                 let symbol = match self.grid.get(r, c) {
                     Some(CellState::Alive) => "██",
