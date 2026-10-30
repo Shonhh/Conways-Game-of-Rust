@@ -17,9 +17,7 @@ use ratatui::{
 
 use conway_game_of_rust::experiment;
 use conway_game_of_rust::grid::{CellState, Grid};
-
-// Sets the speed of the simulation, will be mutable in the future.
-const TIME_BETWEEN_GENERATIONS: u64 = 150;
+use conway_game_of_rust::input::Input;
 
 fn main() -> io::Result<()> {
     // Headless runs never initialize the terminal or wait between generations.
@@ -31,7 +29,11 @@ fn main() -> io::Result<()> {
     // Initialize the terminal interface (enters raw mode, clears screen)
     let mut terminal = ratatui::init();
     // Run the application loop
-    let app_result = App::default().run(&mut terminal);
+    let app_result = App {
+        time_between_generations: Duration::from_millis(150),
+        ..Default::default()
+    }
+    .run(&mut terminal);
     // Restore terminal to normal state (leaves raw mode) upon exit
     ratatui::restore();
     app_result
@@ -45,6 +47,8 @@ pub struct App {
     cursor_pos: (usize, usize), // Current (row, col) of the user's cursor
     selection_anchor: Option<(usize, usize)>, // Where the user started their visual selection (if any)
     mode: Mode,                               // Current input mode (Normal, Visual, Running)
+    input: Input,                             // Holds input buffer
+    time_between_generations: Duration,       // Sets the speed of the simulation
     exit: bool,                               // Flag to break the main loop
 }
 
@@ -82,7 +86,6 @@ impl App {
     /// The main event loop.
     /// This handles drawing, input polling, and updating the simulation state.
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        let tick_rate = Duration::from_millis(TIME_BETWEEN_GENERATIONS);
         let mut last_tick = Instant::now();
 
         while !self.exit {
@@ -90,7 +93,8 @@ impl App {
             terminal.draw(|frame| self.draw(frame))?;
 
             // Calculate remaining time in this frame to maintain consistent speed
-            let timeout = tick_rate
+            let timeout = self
+                .time_between_generations
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
 
@@ -105,7 +109,7 @@ impl App {
             }
 
             // Update the simulation if the timer has elapsed and we are RUNNING
-            if last_tick.elapsed() >= tick_rate {
+            if last_tick.elapsed() >= self.time_between_generations {
                 if self.mode == Mode::RUNNING {
                     self.grid.next_generation();
                 }
@@ -123,86 +127,119 @@ impl App {
     /// Handles all keyboard inputs.
     /// This acts as the "Controller," modifying state based on key codes.
     fn handle_key_event(&mut self, key_event: KeyEvent) {
-        let (row, col) = self.cursor_pos;
+        if !self.input.append_keycode(key_event) {
+            // no action required
+            return;
+        }
 
-        match key_event.code {
-            // --- GLOBAL KEYS (Always Work) ---
-            KeyCode::Char('q') => self.exit(),
-            // Enter acts as the Play/Pause toggle
-            KeyCode::Enter => {
-                if self.mode == Mode::RUNNING {
-                    self.mode = Mode::NORMAL
-                } else {
-                    self.mode = Mode::RUNNING
-                }
-            }
-            // Esc always returns to a safe "Normal" state
-            KeyCode::Esc => {
-                self.mode = Mode::NORMAL;
-                self.selection_anchor = None;
-            }
+        let is_movement = matches!(
+            key_event.code,
+            KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Char('h' | 'j' | 'k' | 'l' | '[' | ']')
+        );
 
-            // --- MODE SWITCHING ---
-            // 'v' enters Visual Mode (unless simulation is running)
-            KeyCode::Char('v') if self.mode != Mode::RUNNING => {
-                self.mode = Mode::VISUAL;
-                self.selection_anchor = Some((row, col));
-            }
+        let repetitions = if is_movement {
+            self.input.running_number()
+        } else {
+            1
+        };
 
-            // --- MOVEMENT (Works in NORMAL and VISUAL mode) ---
-            // Supports both Vim keys (hjkl) and Arrow keys.
-            // Guarded by `if self.mode != Mode::RUNNING` to prevent cursor interference during sim.
-            KeyCode::Left | KeyCode::Char('h') if self.mode != Mode::RUNNING => {
-                if col > 0 {
-                    self.cursor_pos.1 -= 1;
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') if self.mode != Mode::RUNNING => {
-                if row < self.grid.height() - 1 {
-                    self.cursor_pos.0 += 1
-                }
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.mode != Mode::RUNNING => {
-                if row > 0 {
-                    self.cursor_pos.0 -= 1
-                }
-            }
-            KeyCode::Right | KeyCode::Char('l') if self.mode != Mode::RUNNING => {
-                if col < self.grid.width() - 1 {
-                    self.cursor_pos.1 += 1;
-                }
-            }
-
-            // --- ACTIONS ---
-            // 'r' to reset (clear) the board
-            KeyCode::Char('r') => {
-                if self.mode != Mode::RUNNING {
-                    self.grid.reset();
-                }
-            }
-            // Spacebar behavior changes based on context
-            KeyCode::Char(' ') => match self.mode {
-                Mode::NORMAL => {
-                    // Simple toggle of the cell under cursor
-                    self.grid.toggle_cell(row, col);
-                }
-                Mode::VISUAL => {
-                    // Bulk toggle: flip all cells in the selected rectangle
-                    if let Some((anchor_r, anchor_c)) = self.selection_anchor {
-                        let (min_r, max_r, min_c, max_c) =
-                            get_row_and_col_span(row, col, anchor_r, anchor_c);
-
-                        self.grid.multi_toggle_cells(min_r, max_r, min_c, max_c);
+        for _ in 0..repetitions {
+            let (row, col) = self.cursor_pos;
+            match key_event.code {
+                // --- GLOBAL KEYS (Always Work) ---
+                KeyCode::Char('q') => self.exit(),
+                // Enter acts as the Play/Pause toggle
+                KeyCode::Enter => {
+                    if self.mode == Mode::RUNNING {
+                        self.mode = Mode::NORMAL
+                    } else {
+                        self.mode = Mode::RUNNING
                     }
-
-                    // Return to normal mode after action (standard Vim-like behavior)
+                }
+                // Esc always returns to a safe "Normal" state
+                KeyCode::Esc => {
                     self.mode = Mode::NORMAL;
                     self.selection_anchor = None;
                 }
-                Mode::RUNNING => {} // Do nothing while running
-            },
-            _ => {}
+
+                // --- MODE SWITCHING ---
+                // 'v' enters Visual Mode (unless simulation is running)
+                KeyCode::Char('v') if self.mode != Mode::RUNNING => {
+                    self.mode = Mode::VISUAL;
+                    self.selection_anchor = Some((row, col));
+                }
+
+                // --- MOVEMENT (Works in NORMAL and VISUAL mode) ---
+                // Supports both Vim keys (hjkl) and Arrow keys.
+                // Guarded by `if self.mode != Mode::RUNNING` to prevent cursor interference during sim.
+                KeyCode::Left | KeyCode::Char('h') if self.mode != Mode::RUNNING => {
+                    if col > 0 {
+                        self.cursor_pos.1 -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') if self.mode != Mode::RUNNING => {
+                    if row < self.grid.height() - 1 {
+                        self.cursor_pos.0 += 1
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') if self.mode != Mode::RUNNING => {
+                    if row > 0 {
+                        self.cursor_pos.0 -= 1
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') if self.mode != Mode::RUNNING => {
+                    if col < self.grid.width() - 1 {
+                        self.cursor_pos.1 += 1;
+                    }
+                }
+
+                // --- ACTIONS ---
+                // 'r' to reset (clear) the board
+                KeyCode::Char('r') => {
+                    if self.mode != Mode::RUNNING {
+                        self.grid.reset();
+                    }
+                }
+
+                // Increment/Decrement Tick Speed
+                KeyCode::Char('[') => {
+                    self.time_between_generations = (self
+                        .time_between_generations
+                        .saturating_sub(Duration::from_millis(10)))
+                    .max(Duration::from_millis(10));
+                }
+                KeyCode::Char(']') => self.time_between_generations += Duration::from_millis(10),
+
+                // Spacebar behavior changes based on context
+                KeyCode::Char(' ') => match self.mode {
+                    Mode::NORMAL => {
+                        // Simple toggle of the cell under cursor
+                        self.grid.toggle_cell(row, col);
+                    }
+                    Mode::VISUAL => {
+                        // Bulk toggle: flip all cells in the selected rectangle
+                        if let Some((anchor_r, anchor_c)) = self.selection_anchor {
+                            let (min_r, max_r, min_c, max_c) =
+                                get_row_and_col_span(row, col, anchor_r, anchor_c);
+
+                            self.grid.multi_toggle_cells(min_r, max_r, min_c, max_c);
+                        }
+
+                        // Return to normal mode after action (standard Vim-like behavior)
+                        self.mode = Mode::NORMAL;
+                        self.selection_anchor = None;
+                    }
+                    Mode::RUNNING => {} // Do nothing while running
+                },
+                _ => {}
+            }
         }
+
+        self.input.clear_buffer();
     }
 
     fn exit(&mut self) {
@@ -230,7 +267,14 @@ fn get_row_and_col_span(
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Construct the title bar
-        let title = Line::from(format!(" Conway's Game of Rust {} ", self.mode).bold());
+        let title = Line::from(
+            format!(
+                " Conway's Game of Rust {} | {} ms/generation ",
+                self.mode,
+                self.time_between_generations.as_millis()
+            )
+            .bold(),
+        );
 
         // Dynamic help text at the bottom based on current mode
         let instructions = {
@@ -246,12 +290,16 @@ impl Widget for &App {
                     "<Space>".blue().bold(),
                     " Visual Mode ".into(),
                     "<V>".blue().bold(),
+                    " +/- Sim. Speed".into(),
+                    "<[/]>".blue().bold(),
                     " Quit ".into(),
                     "<Q> ".blue().bold(),
                 ]),
                 Mode::RUNNING => Line::from(vec![
                     " Pause/Unpause Simulation ".into(),
                     "<Enter>".blue().bold(),
+                    " +/- Sim. Speed".into(),
+                    "<[/]>".blue().bold(),
                     " Quit ".into(),
                     "<Q> ".blue().bold(),
                 ]),
@@ -266,6 +314,8 @@ impl Widget for &App {
                     "<Space>".blue().bold(),
                     " Normal Mode ".into(),
                     "<Esc>".blue().bold(),
+                    " +/- Sim. Speed".into(),
+                    "<[/]>".blue().bold(),
                     " Quit ".into(),
                     "<Q> ".blue().bold(),
                 ]),
