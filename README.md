@@ -12,7 +12,7 @@ Built for Linux/Unix systems with primary support for **NixOS** via Flakes.
 
 * **Modal Editing**: Distinct modes for navigation, selection, and simulation, inspired by modal editors like Vim.
 * **Visual Mode**: Select and toggle large regions of cells simultaneously using a visual anchor system.
-* **Vim-Key Navigation**: Full support for `h`, `j`, `k`, `l` movement.
+* **Vim-Key Navigation**: Full support for `h`, `j`, `k`, `l` movement, including repetition like `10j`.
 * **Pause & Resume**: Stop the simulation at any time to modify the grid state manually.
 * **Reproducible Builds**: Fully flake-enabled for deterministic builds on Nix systems.
 
@@ -85,6 +85,7 @@ conway_game_of_rust
 | `v` | Enter **Visual Mode** | Normal Mode |
 | `Esc` | Return to **Normal Mode** | Visual Mode |
 | `r` | Reset / Clear Grid | Normal / Visual |
+| `[` / `]` | Decrement / Increment Time Between Generations | All Modes |
 | `q` | Quit Application | All Modes |
 
 ---
